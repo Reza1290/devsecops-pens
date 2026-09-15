@@ -122,21 +122,26 @@ Pencatatan versi perangkat lunak (Docker Engine 29.x, Docker Compose v2.x, Git, 
 
 ## **4.2 Analisis Ancaman (Threat Modeling)**
 
-| Aset | Ancaman | Jalur Serangan | Dampak Bisnis |
+| Aset | Aktor Ancaman | Jalur Serangan | Dampak Bisnis |
 | ----- | ----- | ----- | ----- |
-| Database (DB) - Data Sensitif Aplikasi | Pemindaian Port & Akses Tidak Sah | Port PostgreSQL terbuka ke publik (`0.0.0.0:5432`) akibat salah konfigurasi | Kebocoran data (*data breach*), pelanggaran regulasi privasi, dan reputasi bisnis tercoreng |
+| `keys/` (Kunci Kriptografi & Signing) | Penyerang eksternal / akun lokal tak sah | Kebocoran *private key* akibat izin akses longgar atau terekspos ke *web root* / VCS | Kompromi tanda tangan digital (*supply chain attack*), pemalsuan identitas rilis, hilangnya integritas artefak |
+| `policy/` (Aturan Keamanan OPA/Rego) | Pengembang internal / penyerang dengan hak tulis lokal | Modifikasi atau *tampering* aturan *security gate* pada runner atau host | Pelolosan artefak rentan (*bypass security gate*) ke lingkungan produksi |
+| `reports/` & `sbom/` (Laporan Audit & SBOM) | Penyerang eksternal (fase *reconnaissance*) | Akses tidak sah ke direktori laporan audit yang terpapar sebagai *web root* publik | Pengungkapan informasi (*information disclosure*) daftar kerentanan (CVE) untuk serangan terarah |
+| `app/` (Kode Sumber Aplikasi) | Penyerang / aktor internal | Penyusupan kode berbahaya (*backdoor*) atau penempatan *hardcoded secrets* pada direktori kerja | Kompromi keamanan aplikasi sejak tahap kompilasi dan build |
 
-Ancaman ini muncul akibat kelalaian dalam *port binding* pada deklarasi compose dan ketiadaan *security linting* otomatis pada IaC (*Infrastructure-as-Code*). Dalam DevSecOps, mitigasi dilakukan dengan membatasi interface ke localhost, menerapkan prinsip *least privilege*, serta menegakkan *security gate* sebelum konfigurasi dideploy.
+**Threat Statement:**  
+Sebagai *baseline* laboratorium DevSecOps, aset kritis yang dikelola dalam struktur direktori `~/devsecops-lab/` mencakup kunci kriptografi (`keys/`), aturan kebijakan gerbang keamanan (`policy/`), inventaris komponen serta laporan audit kerentanan (`sbom/`, `reports/`), dan kode sumber aplikasi (`app/`). Aktor ancaman dapat memanfaatkan jalur serangan berupa kesalahan konfigurasi izin akses berkas (seperti *world-readable/writable permissions*) atau paparan direktori kerja sebagai *web root* publik. Dampak bisnis yang ditimbulkan meliputi kompromi rantai pasok perangkat lunak (*software supply chain attack*), kebocoran rahasia kriptografi, manipulasi kebijakan gerbang keamanan (*security gate bypass*), serta *reconnaissance* terarah terhadap daftar kerentanan sistem.
 
 ![][image11]
 
 ## **4.3 Analisis Konfigurasi Keamanan (Security Hardening)**
 
-Berdasarkan inspeksi terhadap konfigurasi container aktif, ditemukan potensi risiko di mana port database PostgreSQL diekspos ke `0.0.0.0:5432`. Langkah perbaikan (*hardening*) dilakukan sebagai berikut:
+Berdasarkan analisis ancaman terhadap struktur direktori kerja laboratorium, langkah-langkah pengerasan keamanan (*security hardening*) diterapkan sebagai berikut:
 
-1. **Prinsip Least Privilege pada Jaringan**: Mengubah pemetaan port pada `docker-compose.yml` dari `0.0.0.0:5432:5432` menjadi `127.0.0.1:5432:5432` agar database hanya dapat diakses secara lokal dari dalam host.
-2. **Isolasi Network Container**: Memanfaatkan user-defined bridge network internal pada Docker agar layanan aplikasi dan database berkomunikasi melalui nama DNS internal tanpa membuka port ke host publik.
-3. **Pemberlakuan Security Policy**: Menerapkan rule firewall (iptables/UFW) yang ketat pada VM host untuk memblokir seluruh koneksi port database yang berasal dari luar.
+1. **Penerapan Prinsip Least Privilege pada Izin Akses Direktori (POSIX Permissions)**: Direktori sensitif seperti `keys/` dikonfigurasi dengan izin ketat `chmod 700` (`drwx------`) dan berkas kunci privat di dalamnya dengan `chmod 600` (`-rw-------`), sehingga hanya pemilik (*owner*) yang dapat membaca dan mengeksekusinya (sebagaimana diverifikasi pada Gambar 11).
+2. **Pencegahan Eksposur Web Root**: Memastikan direktori `reports/`, `sbom/`, dan `keys/` tidak pernah dijadikan dokumen root pada web server publik (Nginx/Apache) ataupun dipublikasikan tanpa mekanisme otentikasi/enkripsi.
+3. **Pemberlakuan .gitignore dan Secret Exclusion**: Mengonfigurasi berkas `.gitignore` pada direktori kerja utama untuk mencegah berkas kunci (`*.key`, `*.pem`, `keys/`) dan kredensial sensitif terunggah secara tidak sengaja ke repositori Git publik.
+4. **Verifikasi Mekanisme Keamanan Host (SecurityOptions)**: Memanfaatkan isolasi kernel tingkat host (*AppArmor*, *Seccomp*, dan *cgroup*) yang terdeteksi aktif pada Docker daemon untuk membatasi kapabilitas container runtime dan mencegah potensi *container breakout* ke filesystem host.
 
 ## **4.4 Analisis Masalah dan Solusi (Troubleshooting)**
 
@@ -156,7 +161,7 @@ Hal yang terpenting dalam *evidence* terverifikasi adalah telemetri atau metadat
 **3. Bagaimana shared responsibility memengaruhi ownership risiko dan tindak lanjut temuan?**  
 *Shared responsibility* dalam sebuah tim dibagi antara developer dan tim Ops, di mana developer memastikan tidak adanya kode yang dapat mengundang *threat* masuk, baik dalam penggunaan *3rd party library* dan lingkungan pengembangannya, sedangkan Ops berperan melindungi atau isolasi terhadap infra dan runtime dari aplikasi dengan memfasilitasi otomasi. Dengan pembagian ini, temuan kerentanan tidak lagi menjadi ajang saling lempar tanggung jawab, melainkan dikelola bersama sebagai prioritas *backlog* untuk segera ditindaklanjuti.
 
-\vspace{0.3cm}
+\pagebreak
 
 \begin{center}
 \textbf{\Large BAB V} \\[2pt]
