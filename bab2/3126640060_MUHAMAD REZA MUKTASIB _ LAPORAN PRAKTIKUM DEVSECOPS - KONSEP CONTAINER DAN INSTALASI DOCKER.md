@@ -143,6 +143,31 @@ docker run -d --name pens-app -p 9090:80 pens-web:1.0 && curl http://localhost:9
 
 \pagebreak
 
+## **3.3 Verifikasi dan Skenario Pengujian**
+
+Berikut adalah matriks pengujian dan verifikasi kriteria keberhasilan praktikum Bab 2:
+
+- [x] **Docker Engine aktif dan `docker version` menampilkan Client serta Server**  
+  *Evidence*: Docker Client v29.1.3 dan Docker Server Engine v29.1.3 aktif dan berkomunikasi melalui socket `/var/run/docker.sock`.  
+  ![][image7]
+
+- [x] **User non-root dapat menjalankan `docker ps` tanpa `sudo`**  
+  *Evidence*: User `ubuntu` telah dimasukkan ke dalam group `docker` (`sudo usermod -aG docker $USER`) sehingga dapat mengeksekusi `docker ps` tanpa hak akses `sudo`.  
+  ![][image6]
+
+- [x] **Container Nginx dapat diakses dari browser melalui port host**  
+  *Evidence*: Container `web-public` berjalan dengan pemetaan port `-p 8080:80` dan pengujian `curl -i http://localhost:8080` mengembalikan kode status `HTTP/1.1 200 OK` (halaman *Welcome to nginx!*).  
+  ![][image12]
+
+- [x] **Image `pens-web:1.0` berhasil dibangun dan dijalankan**  
+  *Evidence*: `Dockerfile` berhasil dibuild menjadi image `pens-web:1.0` dan dijalankan pada port 9090 dengan respon konten HTML `<h1>Docker Lab PENS</h1>`.  
+  ![][image18]
+
+- [x] **Mahasiswa dapat menjelaskan perbedaan `EXPOSE` dan `-p` (Publish)**  
+  *Evidence*: Terverifikasi pada pembahasan teori dan analisis praktikum, di mana instruksi `EXPOSE` pada Dockerfile hanya berfungsi sebagai dokumentasi metadata deklaratif port internal container, sedangkan flag `-p` (`--publish`) pada CLI secara aktif membuat aturan forwarding/NAT iptables pada host Linux untuk memetakan port host ke port container.
+
+\pagebreak
+
 \begin{center}
 \textbf{\Large BAB IV} \\[2pt]
 \textbf{\Large HASIL DAN PEMBAHASAN}

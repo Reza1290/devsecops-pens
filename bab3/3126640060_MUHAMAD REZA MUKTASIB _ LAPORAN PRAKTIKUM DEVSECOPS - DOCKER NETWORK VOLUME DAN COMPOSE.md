@@ -136,6 +136,31 @@ curl -i http://localhost:8080/api/health
 
 \pagebreak
 
+## **3.3 Verifikasi dan Skenario Pengujian**
+
+Berikut adalah matriks pengujian dan verifikasi kriteria keberhasilan praktikum Bab 3:
+
+- [x] **Container di *user-defined bridge* dapat saling *resolve* menggunakan nama**  
+  *Evidence*: Container `server-a` berhasil melakukan `ping -c 3 server-b` melalui nama DNS container pada jaringan `lab-net` tanpa bergantung pada IP dinamis.  
+  ![][image4]
+
+- [x] **Data di *named volume* tetap ada setelah container dihapus**  
+  *Evidence*: Berkas `log.txt` pada volume `data-vol` tetap utuh dan dapat dibaca serta diarsipkan ke `.tar.gz` meskipun container `writer` telah dihapus (`docker rm -f`).  
+  ![][image5]
+
+- [x] **Bind mount menunjukkan perubahan file host tanpa rebuild image**  
+  *Evidence*: Berkas `index.html` dan `nginx.conf` di-mount ke container reverse proxy secara *read-only* (`:ro`), sehingga pembaruan file web langsung aktif secara *real-time* tanpa perlu melakukan *rebuild* image.  
+  ![][image11]
+
+- [x] **tmpfs kehilangan data setelah container restart / berhenti**  
+  *Evidence*: Terverifikasi secara teoretis dan operasional (Subbab 2.2), di mana *tmpfs mount* dialokasikan langsung pada memori RAM host sehingga seluruh data temporer di dalamnya otomatis hilang saat container dimatikan (*volatile storage*).
+
+- [x] **Compose stack web-app-db berjalan dan API health menampilkan koneksi database**  
+  *Evidence*: Ketiga container (`web`, `app`, `db`) berjalan dalam status `healthy` dan endpoint `curl http://localhost:8080/api/health` mengembalikan respon status koneksi database.  
+  ![][image12]
+
+\pagebreak
+
 \begin{center}
 \textbf{\Large BAB IV} \\[2pt]
 \textbf{\Large HASIL DAN PEMBAHASAN}

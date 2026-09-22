@@ -6,7 +6,12 @@
 \usepackage{microtype}
 \usepackage{parskip}
 \usepackage{etoolbox}
-\usepackage{fontspec}
+\usepackage{amssymb}
+\usepackage{pifont}
+
+\AtBeginDocument{
+  \def\boxtimes{\textnormal{\textbf{[\,\ding{51}\,]}}}
+}
 
 % Disable word hyphenation across entire document
 \hyphenpenalty=10000

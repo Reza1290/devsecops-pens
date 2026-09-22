@@ -108,6 +108,25 @@ docker info --format '{{json .SecurityOptions}}'
 9. Pemeriksaan fitur keamanan aktif host dengan `docker info --format '{{json .SecurityOptions}}'`  
    ![][image10]
 
+## **3.3 Verifikasi dan Skenario Pengujian**
+
+Berikut adalah matriks pengujian dan verifikasi kriteria keberhasilan praktikum Bab 1:
+
+- [x] **Docker daemon dapat diakses oleh akun praktikum dan Docker Compose menggunakan plugin v2**  
+  *Evidence*: Docker Client dan Docker Server Engine versi 29.1.3 serta Docker Compose plugin v2.40.3 dapat diakses langsung oleh user `ubuntu` tanpa kendala perizinan (*permission denied*).  
+  ![][image5]
+
+- [x] **Direktori `reports`, `sbom`, dan `keys` tidak dipublikasikan sebagai *web root***  
+  *Evidence*: Struktur direktori kerja laboratorium berada di direktori lokal `~/devsecops-lab/` yang terisolasi dan perizinan direktori sensitif `keys/` dikonfigurasi ketat dengan `chmod 700` (`drwx------`).  
+  ![][image11]
+
+- [x] **SecurityOptions menampilkan mekanisme keamanan host Linux yang aktif**  
+  *Evidence*: Perintah `docker info --format '{{json .SecurityOptions}}'` membuktikan profil isolasi keamanan aktif pada host, mencakup `apparmor`, `seccomp (profile=builtin)`, dan `cgroupns`.  
+  ![][image10]
+
+- [x] **Penyusunan satu paragraf *threat statement* komprehensif**  
+  *Evidence*: Terverifikasi pada Subbab 4.2 melalui tabel threat modeling dan penyusunan satu paragraf *threat statement* komprehensif untuk seluruh aset direktori laboratorium.
+
 \pagebreak
 
 \begin{center}
