@@ -92,8 +92,10 @@ docker version && docker run hello-world
 docker pull nginx:1.26
 docker run -d --name web-public -p 8080:80 nginx:1.26 && docker ps
 docker logs --tail 20 web-public && curl http://localhost:8080
-docker run -it --name ubuntu-test ubuntu:22.04 \
-  /bin/bash -c "cat /etc/os-release"
+docker pull ubuntu:22.04
+docker run -it --name ubuntu-test ubuntu:22.04 /bin/bash
+cat /etc/os-release
+exit
 docker rm -f web-public ubuntu-test
 
 # Build custom Docker image & deployment
@@ -126,16 +128,18 @@ docker run -d --name pens-app -p 9090:80 pens-web:1.0 && curl http://localhost:9
     ![][image11]  
 11. curl http://localhost:8080  
     ![][image12]  
-12. Menjalankan container ubuntu dan cek os-release  
+12. docker pull ubuntu:22.04  
     ![][image13]  
-13. docker rm -f web-public ubuntu-test  
+13. Menjalankan container ubuntu dan cek os-release  
     ![][image14]  
-14. Menyiapkan file index.html dan Dockerfile  
+14. docker rm -f web-public ubuntu-test  
     ![][image15]  
-15. docker build -t pens-web:1.0 .  
+15. Menyiapkan file index.html dan Dockerfile  
     ![][image16]  
-16. Menjalankan pens-app dan uji curl http://localhost:9090  
-    ![][image17]
+16. docker build -t pens-web:1.0 .  
+    ![][image17]  
+17. Menjalankan pens-app dan uji curl http://localhost:9090  
+    ![][image18]
 
 \pagebreak
 
@@ -147,7 +151,7 @@ docker run -d --name pens-app -p 9090:80 pens-web:1.0 && curl http://localhost:9
 
 ## **4.1 Analisis Hasil**
 
-Hasil pemeriksaan versi melalui `docker version` membuktikan bahwa komponen client dan server Docker sudah terpasang dan dapat diakses oleh user non-root. Eksekusi `hello-world` menunjukkan alur runtime Docker yang berhasil menarik image dari registry, membuat container, lalu berhenti saat tugasnya selesai. Container Nginx (`web-public`) dan custom web (`pens-app`) tetap berjalan di background karena proses web server aktif mendengarkan port yang dipetakan (port 8080 dan 9090), dan berhasil diakses menggunakan `curl` yang mengembalikan respon HTML `200 OK`. Penggunaan base image `nginx:1.26-alpine` juga menunjukkan efisiensi layer karena ukurannya jauh lebih kecil dibanding image Linux standar.
+Hasil pemeriksaan versi melalui `docker version` membuktikan bahwa komponen client dan server Docker sudah terpasang dan dapat diakses oleh user non-root. Eksekusi `hello-world` menunjukkan alur runtime Docker yang berhasil menarik image dari registry, membuat container, lalu berhenti saat tugasnya selesai. Pengunduhan dan eksekusi image Nginx (`web-public`) serta Ubuntu (`ubuntu-test`) membuktikan fungsi penarikan image resmi (*official library*) dari Docker Hub berjalan dengan andal. Container Nginx dan custom web (`pens-app`) tetap berjalan di background karena proses web server aktif mendengarkan port yang dipetakan (port 8080 dan 9090), dan berhasil diakses menggunakan `curl` yang mengembalikan respon HTML `200 OK`. Penggunaan base image `nginx:1.26-alpine` juga menunjukkan efisiensi layer karena ukurannya jauh lebih kecil dibanding image Linux standar.
 
 ## **4.2 Analisis Ancaman (Threat Modeling)**
 
@@ -157,7 +161,7 @@ Hasil pemeriksaan versi melalui `docker version` membuktikan bahwa komponen clie
 
 Ancaman ini muncul karena Docker daemon secara default berjalan dengan hak akses root pada sistem host. User yang memiliki akses ke socket Docker dapat menjalankan container dengan flag `--privileged` atau me-mount root filesystem host (`/`) sehingga mendapatkan akses setara root di host. Dalam konteks DevSecOps, mitigasi dilakukan dengan membatasi akses group `docker`, tidak memasang socket ke dalam container, dan mempertimbangkan penggunaan Rootless Docker Mode.  
 
-![][image18]
+![][image19]
 
 ## **4.3 Analisis Masalah dan Solusi (Troubleshooting)**
 
@@ -173,7 +177,7 @@ Berdasarkan praktikum, terdapat beberapa risiko keamanan dan rekomendasi konfigu
 
 1. **Port Binding Publik**: Penggunaan `-p 8080:80` secara default mengikat port ke `0.0.0.0` (terbuka ke jaringan publik). Di lingkungan produksi, port internal sebaiknya diikat ke `127.0.0.1` dan diakses melalui reverse proxy.
 2. **User Non-Root di Container**: Proses di dalam container sebaiknya tidak dijalankan sebagai root (UID 0). Pada Dockerfile perlu ditambahkan instruksi `USER` non-root untuk membatasi hak akses jika container berhasil dieksploitasi.
-3. **Pinning Versi Image**: Hindari penggunaan tag `:latest` pada production. Gunakan tag versi spesifik (misalnya `nginx:1.26-alpine`) atau digest SHA256 agar deployment bersifat *reproducible* dan terhindar dari *breaking changes*.
+3. **Pinning Versi Image**: Hindari penggunaan tag `:latest` pada production. Gunakan tag versi spesifik (misalnya `nginx:1.26-alpine` atau `ubuntu:22.04`) atau digest SHA256 agar deployment bersifat *reproducible* dan terhindar dari *breaking changes*.
 
 ## **4.5 Evaluasi dan Latihan Mandiri**
 
@@ -192,7 +196,7 @@ Image `nginx:1.26-alpine` berisi layer dasar OS Alpine Linux dan instalasi Nginx
 **5. Kapan sebaiknya memilih VM daripada container?**  
 VM lebih tepat dipilih jika membutuhkan kernel atau sistem operasi yang berbeda dari host (misalnya menjalankan Windows di atas host Linux), memerlukan isolasi keamanan tingkat hardware yang sangat ketat (*multi-tenancy*), atau menjalankan aplikasi monolitik *legacy*. Container lebih tepat untuk aplikasi modern, *microservices*, dan pipeline CI/CD yang membutuhkan waktu mulai cepat dan konsumsi resource yang efisien.
 
-\vspace{0.3cm}
+\pagebreak
 
 \begin{center}
 \textbf{\Large BAB V} \\[2pt]
@@ -250,3 +254,5 @@ Containerization mempermudah pengelolaan dan distribusi aplikasi dengan memanfaa
 [image17]: images/image17.png
 
 [image18]: images/image18.png
+
+[image19]: images/image19.png
