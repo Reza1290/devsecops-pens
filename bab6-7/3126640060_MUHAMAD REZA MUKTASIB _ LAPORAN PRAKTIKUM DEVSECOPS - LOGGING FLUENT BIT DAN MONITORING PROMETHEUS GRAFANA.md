@@ -674,6 +674,24 @@ Fungsi `date_trunc('minute', time)` membulatkan stempel waktu ke menit terdekat,
 
 \pagebreak
 
+
+**6. Bagaimana best practice untuk backup database di production?**  
+Berdasarkan pengalaman dan pemahaman analisis saya, *best practice* untuk melakukan *backup* basis data di lingkungan produksi (*production*) sangat bergantung pada arsitektur sistem dan topologi basis data yang diterapkan.
+
+1. **Arsitektur Replikasi Basis Data (*Primary - Read Replica*)**  
+Jika sistem menggunakan arsitektur replikasi (*master-replica* atau *primary-standby*), *best practice* yang saya terapkan adalah melakukan ekstraksi *backup* langsung dari node *read replica* (standby), bukan dari *master/primary*. Hal ini krusial untuk mencegah terjadinya beban I/O disk tinggi dan potensi *table locking* di server utama, sehingga transaksi penulisan (*write*) aplikasi produksi yang sedang melayani pengguna tidak akan terganggu atau macet.
+
+2. **Pemanfaatan Fitur Write-Ahead Logging (WAL) dan Point-In-Time Recovery (PITR)**  
+Secara internal, basis data relasional seperti PostgreSQL sebenarnya memiliki mekanisme konsistensi snapshot (misalnya opsi `serializable-deferrable` pada `pg_dump`). Namun, hanya mengandalkan *backup* berkala terjadwal (seperti harian) sangat berisiko kehilangan data transaksi di antara rentang waktu pencadangan tersebut. Oleh karena itu, *best practice* wajibnya adalah mengaktifkan fitur Write-Ahead Logging (WAL) dengan level `replica` dan mengaktifkan mode arsip (`archive_mode = on`). Pola kerjanya adalah mengambil *base backup* (snapshot fisik penuh) secara berkala, lalu setiap segmen berkas WAL dialirkan secara kontinu ke media penyimpanan terpisah (seperti Object Storage Amazon S3 atau Google Cloud Storage). Dengan kombinasi *base backup* dan arsip WAL ini, kita memperoleh kapabilitas *Point-In-Time Recovery* (PITR) sehingga basis data dapat dipulihkan secara presisi ke detik spesifik sesaat sebelum insiden terjadi (*near-zero RPO*).
+
+3. **Arsitektur Terdistribusi dan Sharding (*Sharded Database*)**  
+Jika basis data telah berskala masif dan di-*sharding* (data terfragmentasi horizontal ke banyak node server), proses *backup* menjadi jauh lebih kompleks karena kita harus menjamin konsistensi data lintas *shard*. *Best practice*-nya adalah menerapkan mekanisme *consistent global snapshot* terkoordinasi melalui simpul koordinator (*metadata router*), atau membekukan sejenak transaksi tulis global saat inisialisasi checkpoint *backup*. Selain itu, sinkronisasi log perubahan berbasis penanda waktu logis (*logical timestamp* atau *two-phase commit logs*) wajib dijaga agar proses *restore* tidak memicu inkonsistensi referensial antar-shard (misalnya pencatatan transaksi transfer dana yang tidak seimbang antar-shard).
+
+4. **Otomatisasi, Manajemen Kredensial, dan Disaster Recovery Drill**  
+Secara operasional, seluruh pipeline *backup* wajib diotomatisasi menggunakan kakas teruji (seperti *pgBackRest* atau *Barman*), kredensial dan kunci enkripsi dikelola aman melalui *Secrets Manager* atau *GitHub Actions Secrets* (tidak boleh di-*hardcode*), menerapkan aturan cadangan 3-2-1 (3 salinan, 2 media berbeda, 1 salinan tersimpan *off-site*), serta secara berkala melaksanakan simulasi pemulihan data (*restore drill*) untuk memvalidasi bahwa cadangan data benar-benar dapat dipulihkan ketika bencana nyata terjadi.
+
+\pagebreak
+
 ### **B. Evaluasi Praktikum Bab 7 (Resource Monitoring)**
 
 **1. Mengapa Prometheus menggunakan scrape model dan bukan hanya push model?**  
@@ -758,6 +776,398 @@ Berdasarkan seluruh rangkaian tahapan perancangan, implementasi, pengujian beban
 6. **Penerapan Prinsip DevSecOps** terwujud nyata melalui pembatasan port pada alamat *loopback* `127.0.0.1`, isolasi jaringan internal antarlayanan, pemisahan kredensial menggunakan berkas lingkungan yang diabaikan Git, serta penerapan hak akses berbasis *least privilege* pada akun pembaca basis data.
 
 \vspace{0.8cm}
+
+\pagebreak
+
+\begin{center}
+\textbf{\Large LAMPIRAN} \\[2pt]
+\textbf{\Large FILE KONFIGURASI DAN OTOMATISASI PIPELINE}
+\end{center}
+\vspace{0.2cm}
+
+Bagian lampiran ini menyajikan dokumentasi lengkap seluruh berkas konfigurasi, skrip inisialisasi basis data, aturan metrik, serta skrip otomatisasi pengujian yang digunakan dalam Praktikum Bab 6 dan Bab 7. Setiap berkas disajikan dalam tangkapan layar terminal dengan penomoran baris kode (*line numbering* menggunakan utilitas `cat -n`), disertai penjelasan mendalam baris-demi-baris (*line-by-line breakdown*) guna menjamin transparansi arsitektural dan kemudahan audit teknis.
+
+## **A. Berkas Konfigurasi dan Otomatisasi Pipeline Bab 6 (Centralized Logging)**
+
+### **Lampiran 1: compose.yaml (Orkestrasi Multi-Container Logging Stack)**
+
+Berkas `compose.yaml` mendefinisikan seluruh infrastruktur layanan Bab 6, mencakup basis data PostgreSQL, engine Fluent Bit, serta tiga kontainer generator log sintetis yang terhubung ke jaringan bridge privat.
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{images/lampiran_img1a.png}
+\end{center}
+
+**Penjelasan Baris Kode (Line-by-Line Breakdown - Bagian 1)**
+
+1. **Line 1–5** mendefinisikan deklarasi blok `services` dan layanan `postgres-db` berbasis citra resmi `postgres:16-alpine` dengan kebijakan `restart: unless-stopped` agar kontainer pulih otomatis saat terjadi gangguan.
+
+2. **Line 6–12** menginjeksikan variabel lingkungan kredensial dari berkas `.env` (`POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `FLUENTBIT_DB_USER`, `FLUENTBIT_DB_PASSWORD`) guna menghindari *hardcoded credentials*.
+
+3. **Line 13–16** memetakan *named volume* persisten `pg-data` ke `/var/lib/postgresql/data` serta melakukan *bind mount* direktori `init/` ke `/docker-entrypoint-initdb.d:ro` dengan status *read-only* agar skrip SQL inisialisasi otomatis dieksekusi saat pembuatan basis data pertama kali.
+
+4. **Line 17–25** mengonfigurasi mekanisme *healthcheck* PostgreSQL menggunakan utilitas `pg_isready -U labadmin -d labdb` dengan interval pengujian 5 detik, batas timeout 3 detik, dan toleransi 5 kali percobaan gagal sebelum dinyatakan tidak sehat.
+
+5. **Line 26–36** mendefinisikan layanan `fluent-bit` berbasis citra resmi `fluent/fluent-bit:3.0`, menghubungkannya ke jaringan `logging-net`, serta menetapkan ketergantungan status sehat pada basis data (`depends_on: postgres-db: condition: service_healthy`).
+
+6. **Line 37–44** memetakan *named volume* `flb-storage` ke direktori internal `/var/log/flb-storage` untuk menyimpan *disk buffer*, serta melakukan *bind mount* berkas konfigurasi `./fluent-bit/fluent-bit.conf` secara *read-only*.
+
+7. **Line 45–54** memetakan port Forward `24224` dan port monitoring HTTP `2020` secara eksklusif ke antarmuka *loopback* `127.0.0.1` pada host, serta menerapkan opsi keamanan `security_opt: ["no-new-privileges:true"]` guna mencegah proses di dalam kontainer meningkatkan hak akses (*privilege escalation*).
+
+\pagebreak
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{images/lampiran_img1b.png}
+\end{center}
+
+**Penjelasan Baris Kode (Line-by-Line Breakdown - Bagian 2)**
+
+1. **Line 61–75** mendefinisikan kontainer generator log pertama (`generator-auth`) menggunakan citra `alpine:3.20` yang menjalankan skrip perulangan pengiriman 20 log otentikasi terstruktur berformat JSON ke `stdout`.
+
+2. **Line 76–85** mengonfigurasi Docker *logging driver* ke mode `fluentd` dengan alamat target host `127.0.0.1:24224`, opsi `fluentd-async: "true"` agar proses aplikasi bersifat *non-blocking* jika Fluent Bit lambat, serta menyematkan format label dinamis `tag: "docker.generator-auth"`.
+
+3. **Line 86–95** mendefinisikan layanan generator kedua (`generator-api`) dengan konfigurasi parameter logging dan driver yang identik, menghasilkan log aktivitas API internal dengan tag `docker.generator-api`.
+
+4. **Line 96–105** mendefinisikan layanan generator ketiga (`generator-worker`) yang mensimulasikan pemrosesan antrean *background job* dengan tag `docker.generator-worker`.
+
+5. **Line 106–115** mendeklarasikan jaringan terisolasi `logging-net` dengan driver `bridge`, serta mendeklarasikan dua *named volume* persisten berumur panjang: `pg-data` untuk basis data relasional dan `flb-storage` untuk antrean buffer fisik Fluent Bit.
+
+\pagebreak
+
+### **Lampiran 2: init/01-init-logging.sh (Skrip Inisialisasi Basis Data dan DDL Schema)**
+
+Skrip shell ini dieksekusi secara otomatis oleh mekanisme *entrypoint* citra PostgreSQL saat kontainer pertama kali diinisialisasi untuk menyusun tabel log, indeks, hak akses, dan view analitik.
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{images/lampiran_img2a.png}
+\end{center}
+
+**Penjelasan Baris Kode (Line-by-Line Breakdown - Bagian 1)**
+
+1. **Line 1–5** mendefinisikan shebang interpreter `#!/usr/bin/env bash` dan mengaktifkan mode proteksi ketat `set -euo pipefail` agar skrip langsung berhenti apabila terjadi kesalahan variabel kosong atau kegagalan perintah.
+
+2. **Line 6–18** memverifikasi keberadaan variabel lingkungan kredensial (`POSTGRES_DB`, `POSTGRES_USER`, `FLUENTBIT_DB_USER`, `FLUENTBIT_DB_PASSWORD`) yang diinjeksikan dari Docker Compose sebelum transaksi DDL dimulai.
+
+3. **Line 19–30** membuka sesi transaksi SQL menggunakan `psql -v ON_ERROR_STOP=1` dan mengeksekusi DDL `CREATE ROLE fluentbit_user LOGIN PASSWORD '...'` guna membentuk akun pengguna khusus aplikasi logging terpisah dari akun superuser `labadmin`.
+
+4. **Line 31–38** membentuk skema terisolasi `CREATE SCHEMA IF NOT EXISTS logs AUTHORIZATION labadmin` untuk memisahkan domain tabel telemetri dari skema publik sistem.
+
+\pagebreak
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{images/lampiran_img2b.png}
+\end{center}
+
+**Penjelasan Baris Kode (Line-by-Line Breakdown - Bagian 2)**
+
+1. **Line 39–50** mendefinisikan struktur tabel fisik `CREATE TABLE logs.fluentbit` yang terdiri dari kolom `id BIGSERIAL PRIMARY KEY`, `time TIMESTAMPTZ NOT NULL`, `tag TEXT NOT NULL`, dan kolom muatan utama `data JSONB NOT NULL`.
+
+2. **Line 51–58** membangun indeks performa tinggi: indeks B-Tree pada kolom waktu (`idx_fluentbit_time`) untuk mempercepat kueri berbasis rentang waktu, serta indeks inversi tergeneralisasi GIN pada kolom JSONB (`idx_fluentbit_gin`) guna mengoptimalkan pencarian atribut bersarang (*key-value*).
+
+3. **Line 59–64** menyetel jalur skema default `ALTER ROLE fluentbit_user SET search_path TO logs, public` dan memberikan hak manipulasi data secara selektif `GRANT USAGE ON SCHEMA logs` serta `GRANT INSERT, SELECT ON TABLE logs.fluentbit` sesuai prinsip *least privilege*.
+
+4. **Line 65–71** menyusun tampilan analitik `CREATE OR REPLACE VIEW logs.recent_logs` yang mengekstrak 100 rekaman log terbaru dengan memformat stempel waktu, memotong teks pesan maksimal 200 karakter, dan menyajikan ringkasan severity.
+
+\pagebreak
+
+### **Lampiran 3: fluent-bit/fluent-bit.conf (Konfigurasi Engine Pipeline Fluent Bit)**
+
+Berkas ini mengontrol seluruh alur penanganan telemetri Fluent Bit mulai dari penerimaan data Forward, buffering di disk, hingga pengiriman ke PostgreSQL.
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{images/lampiran_img3.png}
+\end{center}
+
+**Penjelasan Baris Kode (Line-by-Line Breakdown)**
+
+1. **Line 1–9** mengatur blok `[SERVICE]` dengan frekuensi pengosongan buffer `Flush 1` detik, level pencatatan kejadian `Log_Level info`, serta mengaktifkan antarmuka HTTP internal pada port `2020` (`HTTP_Server On`, `HTTP_Listen 0.0.0.0`, `HTTP_Port 2020`) untuk mengekspos metrik telemetri.
+
+2. **Line 10–15** mengaktifkan mekanisme proteksi antrean fisik di media penyimpanan: direktori antrean `storage.path /var/log/flb-storage`, sinkronisasi berkas `storage.sync normal`, batas memori penampungan backlog `storage.backlog.mem_limit 5M`, serta batas metrik penyimpanan.
+
+3. **Line 16–22** mengatur blok `[INPUT]` berbasis plugin `forward` yang mendengarkan pada alamat `0.0.0.0` port `24224`, alokasi buffer memori maksimal `Mem_Buf_Limit 10M`, serta direktif krusial `storage.type filesystem` yang mewajibkan seluruh log yang diterima langsung dicadangkan ke disk sebelum diproses lebih lanjut.
+
+4. **Line 23–30** mengatur blok `[OUTPUT]` berbasis plugin `pgsql` yang menyalurkan aliran log ke host `postgres-db` port `5432`, basis data `logging_db`, tabel `logs.fluentbit`, otentikasi akun `fluentbit_user`, serta membatasi total buffer antrean disk maksimal `storage.total_limit_size 256M`.
+
+5. **Line 31–34** mengatur blok `[OUTPUT]` kedua dengan plugin `stdout` dan pencocokan pola `Match *` untuk menduplikasi aliran rekaman ke konsol kontainer guna mempermudah inspeksi visual cepat.
+
+\pagebreak
+
+### **Lampiran 4: queries/analysis.sql (Skrip Kueri Analisis SQL JSONB)**
+
+Berkas kueri SQL ini digunakan untuk mengaudit integritas, kuantitas, dan keteruraian data log yang tersimpan di PostgreSQL.
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{images/lampiran_img4.png}
+\end{center}
+
+**Penjelasan Baris Kode (Line-by-Line Breakdown)**
+
+1. **Line 1–4** menonaktifkan pembagian halaman terminal psql `\pset pager off` dan menyalakan penghitung durasi eksekusi `\timing on`.
+
+2. **Line 5–12** menjalankan kueri agregasi total record `SELECT count(*) AS total_logs FROM logs.fluentbit;` untuk mengonfirmasi bahwa seluruh 60 rekaman log berhasil tersimpan.
+
+3. **Line 13–24** menjalankan kueri pengelompokan `SELECT tag, count(*) AS count_per_tag ... GROUP BY tag` untuk memvalidasi bahwa distribusi beban log terbagi rata secara sempurna (masing-masing 20 log) dari generator `auth`, `api`, dan `worker`.
+
+4. **Line 25–38** mengeksekusi ekstraksi atribut bersarang dari kolom `data JSONB` menggunakan operator PostgreSQL `data ->> 'severity'`, `data ->> 'container_name'`, dan `data ->> 'message'`, membuktikan bahwa format JSON terurai secara fungsional.
+
+5. **Line 39–50** mengeksekusi kueri penarikan data dari view `SELECT * FROM logs.recent_logs LIMIT 10;` untuk memverifikasi konsistensi visual stempel waktu dan teks pesan log.
+
+\pagebreak
+
+### **Lampiran 5: scripts/generate-logs.sh (Skrip Otomatisasi Pengiriman Log Sintetis)**
+
+Skrip otomatisasi bash ini bertugas memverifikasi kesiapan engine telemetri dan menjalankan seluruh kontainer penghasil log.
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{images/lampiran_img5.png}
+\end{center}
+
+**Penjelasan Baris Kode (Line-by-Line Breakdown)**
+
+1. **Line 1–5** mendefinisikan shebang shell, pengaktifan flag ketat `-euo pipefail`, dan inisialisasi keluaran status ke terminal host.
+
+2. **Line 6–12** melakukan uji ketersediaan koneksi ke API kesehatan Fluent Bit `curl -fsS http://127.0.0.1:2020/api/v1/health` dengan flag `-fsS` (fail silently on server error, show error on failure), memastikan pipeline siap menerima aliran data.
+
+3. **Line 13–22** mengeksekusi perintah `docker compose up -d --force-recreate generator-auth generator-api generator-worker` untuk memicu pembuatan ulang kontainer generator secara deterministik dari awal.
+
+4. **Line 23–31** menjalankan perulangan pemantauan (*polling loop*) hingga ketiga kontainer generator selesai mengirimkan 20 baris log masing-masing dan bertransisi ke status `exited (0)`.
+
+\pagebreak
+
+### **Lampiran 6: scripts/test-buffering.sh (Skrip Uji Ketahanan Antrean Buffer Fluent Bit)**
+
+Skrip ini membuktikan keandalan antrean disk buffer Fluent Bit saat backend basis data mengalami *outage* mendadak.
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{images/lampiran_img6a.png}
+\end{center}
+
+**Penjelasan Baris Kode (Line-by-Line Breakdown - Bagian 1)**
+
+1. **Line 1–10** mencatat baseline jumlah log awal yang tersimpan di PostgreSQL (berjumlah 60 rekaman log) sebelum simulasi gangguan dimulai.
+
+2. **Line 11–18** mematikan kontainer basis data secara paksa menggunakan perintah `docker compose stop postgres-db` untuk mensimulasikan kegagalan infrastruktur penyimpanan.
+
+3. **Line 19–28** memicu eksekusi pengiriman 60 baris log baru dari generator saat PostgreSQL dalam kondisi mati total, menguji kemampuan Fluent Bit dalam menampung *backpressure*.
+
+4. **Line 29–33** memeriksa status antrean berkas buffer fisik pada direktori `/var/log/flb-storage` di dalam kontainer Fluent Bit, membuktikan data tertahan di disk dan tidak dibuang.
+
+\pagebreak
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{images/lampiran_img6b.png}
+\end{center}
+
+**Penjelasan Baris Kode (Line-by-Line Breakdown - Bagian 2)**
+
+1. **Line 34–48** menyalakan kembali layanan basis data menggunakan `docker compose start postgres-db`, menunggu hingga kondisi *healthcheck* pulih, dan mengamati log Fluent Bit saat melakukan koneksi ulang dan *flushing*.
+
+2. **Line 49–58** memberikan jeda waktu stabilisasi selama 5 detik agar seluruh antrean di disk berhasil disuntikkan kembali ke dalam tabel basis data.
+
+3. **Line 59–65** mengeksekusi kueri verifikasi akhir `SELECT count(*) FROM logs.fluentbit;`, mengonfirmasi bahwa jumlah baris log meningkat tepat menjadi 120 tanpa ada satu pun log yang hilang (*zero log loss*).
+
+\pagebreak
+
+## **B. Berkas Konfigurasi dan Otomatisasi Pipeline Bab 7 (Resource Monitoring)**
+
+### **Lampiran 7: compose.yaml (Orkestrasi Multi-Container Monitoring Stack)**
+
+Berkas orkestrasi ini mengelola seluruh ekosistem monitoring yang mencakup server Prometheus, Node Exporter, cAdvisor, Grafana, serta profil generator beban.
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{images/lampiran_img7a.png}
+\end{center}
+
+**Penjelasan Baris Kode (Line-by-Line Breakdown - Bagian 1)**
+
+1. **Line 1–5** mendefinisikan blok layanan `services` dan kontainer `prometheus` menggunakan citra stabil `prom/prometheus:v2.54.1`.
+
+2. **Line 6–15** menetapkan argumen perintah Prometheus: lokasi berkas konfigurasi `--config.file=/etc/prometheus/prometheus.yml`, direktori TSDB `--storage.tsdb.path=/prometheus`, batas waktu retensi metrik lokal `--storage.tsdb.retention.time=7d`, serta pemetaan port `9090:9090` ke `127.0.0.1`.
+
+3. **Line 16–25** memetakan *named volume* `prometheus-data` ke `/prometheus` dan meletakkan aturan metrik secara *read-only* melalui *bind mount* `./prometheus/rules:/etc/prometheus/rules:ro` serta `./prometheus/tests:/etc/prometheus/tests:ro`.
+
+4. **Line 26–40** mendefinisikan kontainer `node-exporter` berbasis citra `prom/node-exporter:v1.12.1` dengan *bind mount* sistem berkas virtual host Linux `/proc:/host/proc:ro` dan `/sys:/host/sys:ro`.
+
+5. **Line 41–50** mengonfigurasi parameter kernel Node Exporter: `--path.procfs=/host/proc`, `--path.sysfs=/host/sys`, serta pola pengabaian sistem berkas virtual (`--collector.filesystem.mount-points-exclude=...`) agar tidak mengotori metrik.
+
+\pagebreak
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{images/lampiran_img7b.png}
+\end{center}
+
+**Penjelasan Baris Kode (Line-by-Line Breakdown - Bagian 2)**
+
+1. **Line 51–65** mendefinisikan layanan `cadvisor` menggunakan citra `ghcr.io/google/cadvisor:v0.60.5` dengan *bind mount* kontrol hirarki cgroup `/sys/fs/cgroup:/sys/fs/cgroup:ro` dan socket Docker `/var/run/docker.sock:ro` guna mengekstrak konsumsi sumber daya per kontainer secara real-time.
+
+2. **Line 66–80** mendefinisikan layanan `grafana` berbasis citra `grafana/grafana:11.2.0`, memetakan port web `3000:3000` ke `127.0.0.1`, menginjeksikan kata sandi admin via `GF_SECURITY_ADMIN_PASSWORD`, serta memetakan berkas *provisioning* datasource dan dashboard.
+
+3. **Line 81–90** mendefinisikan profil eksperimen `load-generator` menggunakan citra `alpine:3.20` dengan pembatasan cgroup prosesor `cpus: "0.50"` dan perintah komputasi intensif (*infinite loop*) untuk memicu lonjakan konsumsi CPU.
+
+4. **Line 91–95** mendeklarasikan jaringan privat `monitoring-net` dengan driver `bridge`, serta *named volumes* `prometheus-data` dan `grafana-data`.
+
+\pagebreak
+
+### **Lampiran 8: prometheus/prometheus.yml (Konfigurasi Scraper Prometheus)**
+
+Berkas konfigurasi utama server Prometheus yang mengatur parameter penarikan metrik secara periodik dari target exporter.
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{images/lampiran_img8.png}
+\end{center}
+
+**Penjelasan Baris Kode (Line-by-Line Breakdown)**
+
+1. **Line 1–6** mendefinisikan blok `global` yang menetapkan interval scrape berkala `scrape_interval: 15s`, batas waktu respon maksimal target `scrape_timeout: 10s`, serta interval kalkulasi aturan PromQL `evaluation_interval: 15s`.
+
+2. **Line 7–10** mendefinisikan blok `rule_files` yang memuat berkas aturan rekaman `rules/recording-rules.yml` dan aturan peringatan `rules/alert-rules.yml`.
+
+3. **Line 11–15** mengatur target job pertama `job_name: 'prometheus'` yang menarik metrik kesehatan internal server Prometheus pada endpoint `localhost:9090`.
+
+4. **Line 16–21** mengatur target job kedua `job_name: 'node-exporter'` yang menarik telemetri sistem host fisik dari endpoint internal `node-exporter:9100`.
+
+5. **Line 22–27** mengatur target job ketiga `job_name: 'cadvisor'` yang menarik telemetri sumber daya cgroup seluruh kontainer Docker dari endpoint internal `cadvisor:8080`.
+
+\pagebreak
+
+### **Lampiran 9: prometheus/rules/recording-rules.yml (Recording Rules PromQL)**
+
+Berkas aturan rekaman metrik untuk mengoptimalkan kinerja kueri visualisasi dashboard Grafana melalui pra-agregasi di latar belakang.
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{images/lampiran_img9.png}
+\end{center}
+
+**Penjelasan Baris Kode (Line-by-Line Breakdown)**
+
+1. **Line 1–5** mendefinisikan grup aturan dengan nama `recording_rules`.
+
+2. **Line 6–16** mendefinisikan aturan rekaman `instance:node_cpu_utilisation:ratio_rate5m` yang menghitung rasio utilisasi prosesor host Linux dalam jendela waktu 5 menit melalui ekspresi PromQL `1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))`.
+
+3. **Line 17–28** mendefinisikan aturan rekaman `instance:node_memory_utilisation:ratio` yang menghitung persentase memori RAM terpakai terhadap kapasitas total host melalui rumus `1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)`.
+
+4. **Line 29–39** mendefinisikan aturan rekaman `container:cpu_usage_cores:rate1m` yang menghitung konsumsi core CPU aktual dari tiap-tiap kontainer Docker melalui rumus laju `sum by (name) (rate(container_cpu_usage_seconds_total{name!=""}[1m]))`.
+
+\pagebreak
+
+### **Lampiran 10: prometheus/rules/alert-rules.yml (Alerting Rules PromQL)**
+
+Berkas aturan peringatan otomatis yang mendeteksi anomali operasional infrastruktur dan beban kerja kontainer secara real-time.
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{images/lampiran_img10.png}
+\end{center}
+
+**Penjelasan Baris Kode (Line-by-Line Breakdown)**
+
+1. **Line 1–5** mendefinisikan grup aturan alarm dengan nama `alert_rules`.
+
+2. **Line 6–21** mendefinisikan alert `TargetDown` yang aktif (*firing*) jika target exporter gagal dihubungi (`up == 0`) bertahan stabil selama 1 menit (`for: 1m`), dengan label keparahan `severity: critical` serta anotasi deskripsi target yang mati.
+
+3. **Line 22–37** mendefinisikan alert `NodeHighCPU` yang memantau utilisasi prosesor host melebihi ambang batas 85% (`instance:node_cpu_utilisation:ratio_rate5m > 0.85`) selama lebih dari 5 menit dengan tingkat keparahan `warning`.
+
+4. **Line 38–53** mendefinisikan alert `ContainerHighCPU` yang mendeteksi konsumsi prosesor kontainer melampaui 0.40 core (`container:cpu_usage_cores:rate1m > 0.40`) bertahan stabil selama 1 menit dengan tingkat keparahan `warning`, dirancang khusus untuk memverifikasi pemicuan alarm pada pengujian beban.
+
+\pagebreak
+
+### **Lampiran 11: prometheus/tests/rules.test.yml (Skenario Unit Testing Promtool)**
+
+Berkas pengujian deterministik berbasis utilitas `promtool` untuk memvalidasi kebenaran logika aturan alarm tanpa memerlukan lingkungan operasional aktif.
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{images/lampiran_img11.png}
+\end{center}
+
+**Penjelasan Baris Kode (Line-by-Line Breakdown)**
+
+1. **Line 1–4** mendaftarkan berkas aturan target yang akan diuji `rule_files: [../rules/alert-rules.yml]` serta interval evaluasi pengujian virtual sebesar `1m`.
+
+2. **Line 5–14** mendefinisikan deret waktu tiruan (*mock series*) untuk metrik `up{job="node-exporter"}` dengan rangkaian nilai kegagalan `0 0 0 0` selama rentang menit 0m hingga 3m.
+
+3. **Line 15–23** mendefinisikan blok asersi `alert_rule_test` yang memastikan bahwa pada evaluasi menit ke-1 (`eval_time: 1m`), alert `TargetDown` wajib berada dalam kondisi aktif (*firing*) dengan pasangan label dan anotasi yang valid.
+
+\pagebreak
+
+### **Lampiran 12: grafana/provisioning/datasources/datasources.yml (Provisioning Datasources)**
+
+Berkas konfigurasi otomatis sumber data Grafana (*Datasource-as-Code*) untuk Prometheus dan basis data PostgreSQL Bab 6.
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{images/lampiran_img12.png}
+\end{center}
+
+**Penjelasan Baris Kode (Line-by-Line Breakdown)**
+
+1. **Line 1–4** mendefinisikan versi skema provisioning otomatis Grafana `apiVersion: 1`.
+
+2. **Line 5–18** mendefinisikan datasource utama `prometheus-bab7` dengan tipe `prometheus`, URL internal Docker `http://prometheus:9090`, metode akses HTTP POST, status sebagai sumber data default (`isDefault: true`), serta versi Prometheus 2.54+.
+
+3. **Line 19–34** mendefinisikan datasource sekunder `postgres-logs-bab6` dengan tipe `postgres`, alamat host internal `postgres-db:5432`, nama basis data `logging_db`, nama pengguna aplikasi `grafana_reader`, serta penonaktifan enkripsi TLS internal `sslmode: disable`.
+
+\pagebreak
+
+### **Lampiran 13: scripts/verify-stack.sh (Skrip Otomatisasi Verifikasi Monitoring Stack)**
+
+Skrip shell ini bertugas melakukan pengujian kesehatan menyeluruh terhadap seluruh komponen monitoring stack dan mengeksekusi kueri PromQL via API.
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{images/lampiran_img13a.png}
+\end{center}
+
+**Penjelasan Baris Kode (Line-by-Line Breakdown - Bagian 1)**
+
+1. **Line 1–8** mendefinisikan shebang shell, pengaktifan flag ketat `-euo pipefail`, dan inisialisasi URL endpoint API Prometheus lokal `http://127.0.0.1:9090`.
+
+2. **Line 9–20** memverifikasi ketersediaan antarmuka HTTP Prometheus melalui endpoint `/api/v1/status/buildinfo` serta memeriksa kesiapan respon dari target exporter.
+
+3. **Line 21–32** mengeksekusi kueri PromQL dasar `up` melalui endpoint `/api/v1/query`, memvalidasi bahwa seluruh target bernilai `1` dan tidak ada koneksi scraper yang terputus.
+
+\pagebreak
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{images/lampiran_img13b.png}
+\end{center}
+
+**Penjelasan Baris Kode (Line-by-Line Breakdown - Bagian 2)**
+
+1. **Line 33–48** mengeksekusi kueri aturan rekaman `instance:node_cpu_utilisation:ratio_rate5m` melalui API Prometheus dan memverifikasi bahwa vektor hasil tidak berstatus kosong (*non-empty vector*).
+
+2. **Line 49–58** mengeksekusi kueri konsumsi memori cgroup kontainer `container_memory_working_set_bytes{name!=""}` dan menampilkan 3 kontainer teratas dengan konsumsi memori terbesar.
+
+3. **Line 59–63** mencetak laporan status sukses menyeluruh bahwa seluruh komponen monitoring stack beroperasi sesuai dengan spesifikasi teknis praktikum.
+
+\pagebreak
+
+### **Lampiran 14: scripts/connect-bab6.sh (Skrip Integrasi Cross-Network Basis Data Bab 6)**
+
+Skrip otomatisasi integrasi telemetri terpadu yang menghubungkan Grafana Bab 7 ke kontainer basis data PostgreSQL Bab 6.
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{images/lampiran_img14a.png}
+\end{center}
+
+**Penjelasan Baris Kode (Line-by-Line Breakdown - Bagian 1)**
+
+1. **Line 1–10** memverifikasi keberadaan kontainer basis data `postgres-db` milik Bab 6 serta jaringan bridge `bab7-monitoring-net`.
+
+2. **Line 11–25** mengeksekusi perintah Docker `docker network connect --alias postgres-db bab7-monitoring-net postgres-db` untuk menyambungkan kontainer basis data ke jaringan monitoring Bab 7 dengan alias hostname privat `postgres-db`.
+
+3. **Line 26–48** mengeksekusi skrip SQL interaktif via `docker exec -i postgres-db psql` untuk membentuk *role* basis data baru `grafana_reader` dengan kata sandi terenkripsi aman, terpisah dari akun superuser maupun akun logging.
+
+\pagebreak
+
+\begin{center}
+\includegraphics[width=0.88\linewidth]{images/lampiran_img14b.png}
+\end{center}
+
+**Penjelasan Baris Kode (Line-by-Line Breakdown - Bagian 2)**
+
+1. **Line 49–70** menerapkan prinsip keamanan *least privilege* dengan memberikan hak akses baca secara ketat: `GRANT USAGE ON SCHEMA logs TO grafana_reader` dan `GRANT SELECT ON ALL TABLES IN SCHEMA logs TO grafana_reader`, menutup hak penulisan maupun modifikasi data log.
+
+2. **Line 71–85** menguji konektivitas TCP dari dalam kontainer Grafana ke host `postgres-db` pada port `5432` menggunakan utilitas socket jaringan internal.
+
+3. **Line 86–95** melakukan validasi status kesehatan koneksi datasource Grafana melalui panggilan API internal `/api/datasources/uid/postgres-logs-bab6/health`, memverifikasi kembalian respon sukses `{"status":"OK","message":"Database Connection OK"}`.
+
+\pagebreak
 
 \begin{center}
 \small \textit{\textbf{Catatan \& Pernyataan Penggunaan AI:}\\Dokumen laporan ini disusun dengan bantuan AI yang digunakan secara terbatas untuk merapikan tata bahasa laporan serta men-generate catatan materi kuliah (saat Pak Ferry menjelaskan di kelas/lab) menjadi diagram visual peta konsep (mind map). Seluruh jawaban pada bagian Evaluasi dan Latihan Mandiri, analisis teknis, serta pengujian praktikum merupakan hasil pengerjaan, pemahaman mandiri, dan analisis saya secara langsung.}
