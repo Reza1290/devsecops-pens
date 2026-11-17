@@ -1,2 +1,5 @@
 scratch/
 *.tmp
+lab/
+/lab
+

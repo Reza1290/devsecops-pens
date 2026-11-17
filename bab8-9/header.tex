@@ -8,6 +8,7 @@
 \usepackage{etoolbox}
 \usepackage{amssymb}
 \usepackage{pifont}
+\usepackage{xurl}
 
 \AtBeginDocument{
   \def\boxtimes{\textnormal{\textbf{[\,\ding{51}\,]}}}
@@ -17,7 +18,7 @@
 \hyphenpenalty=10000
 \exhyphenpenalty=10000
 \tolerance=9999
-\emergencystretch=2.5em
+\emergencystretch=3em
 \righthyphenmin=62
 \lefthyphenmin=62
 
@@ -49,9 +50,14 @@
 \fancyfoot[C]{\fontsize{10pt}{12pt}\selectfont\textbf{\thepage}}
 \renewcommand{\footrulewidth}{0pt}
 
+\renewcommand{\labelitemi}{\textbullet}
+\renewcommand{\labelitemii}{\textbullet}
+\renewcommand{\labelitemiii}{\textbullet}
+\renewcommand{\labelitemiv}{\textbullet}
+
 % List Spacing Adjustment
-\AtBeginEnvironment{enumerate}{\setlength{\itemsep}{1pt}\setlength{\parskip}{0pt}\setlength{\parsep}{0pt}\setlength{\topsep}{1pt}}
-\AtBeginEnvironment{itemize}{\setlength{\itemsep}{1pt}\setlength{\parskip}{0pt}\setlength{\parsep}{0pt}\setlength{\topsep}{1pt}}
+\AtBeginEnvironment{enumerate}{\setlength{\itemsep}{2pt}\setlength{\parskip}{0pt}\setlength{\parsep}{0pt}\setlength{\topsep}{2pt}}
+\AtBeginEnvironment{itemize}{\setlength{\itemsep}{2pt}\setlength{\parskip}{0pt}\setlength{\parsep}{0pt}\setlength{\topsep}{2pt}}
 
 % Section Formatting (Full Black Times New Roman)
 \makeatletter
